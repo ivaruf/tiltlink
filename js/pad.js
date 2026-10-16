@@ -2,8 +2,9 @@
  * pad.js — the phone.
  *
  * Reads how the phone is tilted and sends it to the stage thirty times a
- * second on the lossy lane. Nothing else about the ball lives here: the
- * stage owns the physics, so this file only ever says "tilted this much".
+ * second on the lossy lane; a Pulse tap goes on the reliable one. Nothing
+ * about the fight is decided here: the stage owns lives, hits and the
+ * cooldown, and this file shows what it is told.
  *
  * THE SENSOR IS GATED TWICE, and both gates are why there is a Connect
  * button rather than connecting on load:
@@ -12,19 +13,18 @@
  *     DeviceOrientationEvent.requestPermission() is called from a tap, and
  *     that call has to be the first thing the tap does — await anything
  *     before it and the gesture is spent.
- *   - Every browser withholds the sensors outside a secure context. The
- *     Pages URL is HTTPS; a phone on the Mac's LAN IP over http is not.
+ *   - Every browser withholds sensors (and the mic) outside a secure
+ *     context. Pages is HTTPS; the Mac's LAN IP over http is not.
  *
- * So the pad never depends on the sensor: if no reading arrives within a
- * second of connecting, the tray becomes a drag pad, and the demo still
- * shows the whole round trip.
+ * So the pad never depends on the sensor: no reading within a second of
+ * connecting turns the tray into a drag pad.
  *
- * Hold the phone like a tray. "Level" takes the current angle as flat, so
- * it works sitting on a sofa as well as standing at a table.
+ * Hold the phone like a tray. "Level" takes the current angle as flat.
  */
 
 import { SYMBOLS, CODE_LENGTH, codeIcons } from "./net/codes.js";
 import { joinRendezvous } from "./net/rendezvous.js";
+import * as recorder from "./recorder.js";
 
 const SEND_HZ = 30;
 const FULL_TILT_DEG = 28; // this far from level is full speed
@@ -39,6 +39,8 @@ let zero = null; // { beta, gamma } taken as level
 let raw = null;
 let source = "none"; // "tilt" | "drag"
 let dragging = false;
+let myName = "";
+let clip = null; // the last good take, Int16 PCM
 
 /* ---------- the keypad, for a phone that did not scan ---------- */
 
@@ -87,6 +89,11 @@ export function startPad(code) {
   $("pad-go").onclick = () => connect(code);
 }
 
+const faces = ["pad-connect", "pad-live", "pad-record"];
+const face = (id) => {
+  for (const f of faces) $(f).hidden = f !== id;
+};
+
 async function connect(code) {
   const button = $("pad-go");
   const error = $("pad-error");
@@ -108,23 +115,23 @@ async function connect(code) {
   channel.onMessage = receive;
   channel.onClose = () => {
     clearInterval(sendTimer);
-    $("pad-live").hidden = true;
-    $("pad-connect").hidden = false;
+    recorder.close();
+    face("pad-connect");
     button.disabled = false;
     button.textContent = "Reconnect";
     error.textContent = "Lost the screen.";
   };
-  $("pad-connect").hidden = true;
-  $("pad-live").hidden = false;
+  face("pad-live");
   wireLive();
   keepAwake();
   sendTimer = setInterval(send, 1000 / SEND_HZ);
+  // Reconnected with a sound already made: the new stage-side blob has none.
+  if (clip) sendClip(clip);
 }
 
 function askForSensor() {
   const D = window.DeviceOrientationEvent;
-  if (typeof D?.requestPermission === "function")
-    return D.requestPermission().catch(() => "denied");
+  if (typeof D?.requestPermission === "function") return D.requestPermission().catch(() => "denied");
   return Promise.resolve("granted");
 }
 
@@ -135,7 +142,6 @@ function wireLive() {
   if (wired) return;
   wired = true;
   addEventListener("deviceorientation", onOrientation);
-  // No reading after a second means no sensor we may use: drag instead.
   setTimeout(() => {
     if (source === "none") setSource("drag");
   }, 1000);
@@ -159,7 +165,7 @@ function wireLive() {
   const release = () => {
     if (!dragging) return;
     dragging = false;
-    // A joystick springs back; a tray would not, but a thumb needs to.
+    // A thumb needs the stick to spring back.
     tilt = { x: 0, y: 0 };
     paintDot();
   };
@@ -169,7 +175,14 @@ function wireLive() {
   $("pad-zero").onclick = () => {
     if (raw) zero = { ...raw };
   };
-  $("pad-tap").onclick = () => channel?.send({ t: "tap" });
+  // pointerdown, not click: in a fight the 100-odd ms a click waits for
+  // the finger to lift is the difference between a hit and a miss.
+  $("pad-tap").addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    channel?.send({ t: "tap" });
+  });
+  $("pad-sound").onclick = openRecorder;
+  wireRecorder();
 }
 
 function onOrientation(e) {
@@ -177,8 +190,7 @@ function onOrientation(e) {
   if (source !== "tilt") setSource("tilt");
   raw = { beta: e.beta, gamma: e.gamma };
   if (!zero) zero = { ...raw };
-  // Relative to "level", then turned to match how the screen is rotated,
-  // so tilting toward the TV is "up" whichever way the phone is held.
+  // Relative to "level", then turned to match the screen's rotation.
   const db = raw.beta - zero.beta;
   const dg = raw.gamma - zero.gamma;
   let x = dg;
@@ -207,37 +219,149 @@ function setSource(next) {
 const clamp = (v) => Math.max(-1, Math.min(1, v));
 
 function paintDot() {
-  $("tray-dot").style.translate = `${tilt.x * 42}vmin ${tilt.y * 42}vmin`;
+  $("tray-dot").style.translate = `${tilt.x * 34}vmin ${tilt.y * 34}vmin`;
+}
+
+/* ---------- recording the attack sound ---------- */
+
+async function openRecorder() {
+  face("pad-record");
+  const status = $("rec-status");
+  status.textContent = "Opening the microphone…";
+  try {
+    await recorder.open();
+    status.textContent = clip ? "Saved. Hold to record a new one." : "Ready.";
+  } catch (e) {
+    status.textContent =
+      e?.name === "NotAllowedError" ? "The microphone was refused — allow it in the browser to record." : (e?.message ?? String(e));
+  }
+}
+
+function wireRecorder() {
+  const hold = $("rec-hold");
+  const status = $("rec-status");
+  let holding = false;
+  hold.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    if (!recorder.isOpen()) return;
+    holding = true;
+    hold.setPointerCapture(e.pointerId);
+    hold.classList.add("on");
+    hold.textContent = "Recording…";
+    recorder.start();
+  });
+  const release = () => {
+    if (!holding) return;
+    holding = false;
+    hold.classList.remove("on");
+    hold.textContent = "Hold to record";
+    try {
+      clip = recorder.stop();
+    } catch (e) {
+      status.textContent = e.message;
+      return;
+    }
+    recorder.preview(clip);
+    $("rec-play").disabled = false;
+    status.textContent = "Sending to the screen…";
+    sendClip(clip);
+  };
+  hold.addEventListener("pointerup", release);
+  hold.addEventListener("pointercancel", release);
+  $("rec-play").onclick = () => recorder.preview(clip);
+  $("rec-done").onclick = () => {
+    // Done closes the mic, so the phone stops listening to the room.
+    recorder.close();
+    face("pad-live");
+  };
+}
+
+function sendClip(pcm) {
+  const parts = recorder.toChunks(pcm);
+  parts.forEach((d, i) => channel?.send({ t: "clip", i, n: parts.length, d }));
 }
 
 /* ---------- the wire ---------- */
 
 function send() {
-  // Rounded: three decimals is finer than any hand, and the frame is smaller.
-  channel?.send(
-    { t: "tilt", x: +tilt.x.toFixed(3), y: +tilt.y.toFixed(3) },
-    true,
-  );
+  channel?.send({ t: "tilt", x: +tilt.x.toFixed(3), y: +tilt.y.toFixed(3) }, true);
 }
 
 function receive(m) {
   if (!m || typeof m !== "object") return;
-  if (m.t === "hello" && /^#[0-9a-f]{6}$/i.test(m.colour)) {
-    document.documentElement.style.setProperty("--me", m.colour);
-  } else if (m.t === "bump") {
-    const s = Math.max(0, Math.min(1, Number(m.s) || 0));
-    // Android buzzes; iOS has no vibrate, so the tray flashes on both.
-    navigator.vibrate?.(Math.round(15 + s * 45));
-    const tray = $("tray");
-    tray.classList.remove("hit");
-    void tray.offsetWidth;
-    tray.classList.add("hit");
-  } else if (m.t === "path") {
-    $("pad-path").textContent =
-      m.path === "relay" ? "Connected via TURN relay" : "Connected directly";
-  } else if (m.t === "full") {
-    $("pad-error").textContent = "The screen is full.";
+  switch (m.t) {
+    case "hello":
+      if (/^#[0-9a-f]{6}$/i.test(m.colour)) document.documentElement.style.setProperty("--me", m.colour);
+      myName = typeof m.name === "string" ? m.name.slice(0, 20) : "";
+      $("pad-name").textContent = myName ? `You are ${myName}` : "";
+      break;
+    case "phase":
+      paintPhase(m.phase, !!m.won);
+      break;
+    case "you":
+      paintLives(Number(m.lives) || 0, !!m.alive);
+      break;
+    case "pulsed": {
+      // The stage fired it; show the cooldown it will enforce.
+      const button = $("pad-tap");
+      const s = Math.max(0.1, Math.min(3, Number(m.cooldown) || 0.8));
+      button.style.setProperty("--cd", `${s}s`);
+      button.classList.remove("cooling");
+      void button.offsetWidth;
+      button.classList.add("cooling");
+      break;
+    }
+    case "hit":
+      navigator.vibrate?.([60, 40, 60]);
+      flash("hurt");
+      break;
+    case "bump":
+      navigator.vibrate?.(Math.round(15 + Math.max(0, Math.min(1, Number(m.s) || 0)) * 45));
+      flash("hit");
+      break;
+    case "path":
+      $("pad-path").textContent = m.path === "relay" ? "Connected via TURN relay" : "Connected directly";
+      break;
+    case "clip-ok":
+      $("rec-status").textContent = "Saved on the screen. Pulse to hear it!";
+      break;
+    case "full":
+      $("pad-error").textContent = "The screen is full.";
+      break;
   }
+}
+
+let lastPhase = "lobby";
+let lastAlive = true;
+let lastWon = false;
+function paintPhase(phase, won) {
+  lastPhase = phase;
+  lastWon = won;
+  paintStatus();
+}
+function paintLives(lives, alive) {
+  lastAlive = alive;
+  $("pad-lives").textContent = lastPhase === "lobby" ? "" : alive ? "♥".repeat(lives) || "" : "";
+  paintStatus();
+}
+function paintStatus() {
+  $("pad-phase").textContent =
+    lastPhase === "lobby"
+      ? "Practice: pulses push, nobody gets hurt. Waiting for the start…"
+      : lastPhase === "over"
+        ? lastWon
+          ? "You won! 🎉"
+          : "Round over."
+        : lastAlive
+          ? "Fight! Pulse right next to someone."
+          : "You're out — watch the screen. Next round soon.";
+}
+
+function flash(kind) {
+  const tray = $("tray");
+  tray.classList.remove("hit", "hurt");
+  void tray.offsetWidth;
+  tray.classList.add(kind);
 }
 
 /* A phone that locks mid-round stops sending; ask it not to. Every
@@ -248,8 +372,7 @@ function keepAwake() {
   awake = true;
   const ask = async () => {
     try {
-      if (document.visibilityState === "visible")
-        await navigator.wakeLock?.request("screen");
+      if (document.visibilityState === "visible") await navigator.wakeLock?.request("screen");
     } catch {
       /* Refused or unsupported. */
     }

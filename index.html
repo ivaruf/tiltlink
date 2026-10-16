@@ -68,7 +68,30 @@
         </div>
       </aside>
       <ul id="roster" aria-live="polite"></ul>
-      <p id="empty-hint" class="empty-hint">Waiting for phones…</p>
+
+      <div id="lobby-panel" class="card centre-panel">
+        <h1 class="wordmark small-mark">Tilt<span>Link</span></h1>
+        <p class="rules">
+          Tilt to roll. <b>Pulse</b> right next to someone to knock off a
+          life. 10 lives each. Last blob standing wins.
+        </p>
+        <div class="stepper" role="group" aria-label="Bots">
+          <span class="label">Bots</span>
+          <button id="bots-less" class="pill round" aria-label="Fewer bots">−</button>
+          <output id="bots-count">2</output>
+          <button id="bots-more" class="pill round" aria-label="More bots">+</button>
+        </div>
+        <button id="start" class="pill primary big">Start</button>
+        <p id="lobby-note" class="status"></p>
+      </div>
+
+      <div id="over-panel" class="card centre-panel" hidden>
+        <h2 id="over-title" class="over-title"></h2>
+        <div class="doors">
+          <button id="to-lobby" class="pill">Lobby</button>
+          <button id="rematch" class="pill primary">Rematch</button>
+        </div>
+      </div>
     </section>
 
     <!-- A phone without a code: twelve pictures, three slots. -->
@@ -90,15 +113,34 @@
         <p id="pad-error" class="status"></p>
       </div>
       <div id="pad-live" class="pad-face" hidden>
+        <p id="pad-name" class="pad-name"></p>
+        <p id="pad-lives" class="pad-lives" aria-live="polite"></p>
+        <p id="pad-phase" class="status"></p>
         <div id="tray" class="tray" aria-label="Tilt or drag here">
           <div id="tray-dot" class="tray-dot"></div>
         </div>
         <p id="pad-mode" class="status"></p>
+        <button id="pad-tap" class="pill primary pulse">Pulse</button>
         <div class="doors">
           <button id="pad-zero" class="pill">Level</button>
-          <button id="pad-tap" class="pill primary">Pulse</button>
+          <button id="pad-sound" class="pill">Your sound</button>
         </div>
         <p id="pad-path" class="status small"></p>
+      </div>
+
+      <!-- Record the 0.4 s attack sound. The mic is open only while this is. -->
+      <div id="pad-record" class="pad-face" hidden>
+        <h2 class="label">Your attack sound</h2>
+        <p class="status">
+          Hold the button and shout something short.<br />The first 0.4 s
+          plays on the big screen every time you pulse.
+        </p>
+        <button id="rec-hold" class="pill primary big rec">Hold to record</button>
+        <p id="rec-status" class="status" aria-live="polite"></p>
+        <div class="doors">
+          <button id="rec-play" class="pill" disabled>Play it</button>
+          <button id="rec-done" class="pill">Done</button>
+        </div>
       </div>
     </section>
   </body>

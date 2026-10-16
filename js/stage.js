@@ -1,50 +1,70 @@
 /*
- * stage.js — the big screen.
+ * stage.js — the big screen: the room, the panels, and the wire.
  *
- * Takes a picture code, holds it at the broker, shows it as a QR and as
- * three pictures, and gives every phone that joins a ball. The phone sends
- * its tilt; the stage owns all the physics (host-authoritative, hub §8), so
- * a phone can only ever say "I am tilted this much", clamped, never "my ball
- * is here".
+ * Takes a picture code, holds it at the broker and shows it as a QR. Every
+ * phone that joins becomes a blob in arena.js, which owns the fight; this
+ * file turns phone messages into arena calls and arena events into phone
+ * messages and sounds.
  *
- * Talks back too, on the reliable lane: the phone's colour on join, and a
- * "bump" when its ball hits a wall or another ball, which the phone turns
- * into a buzz. That is the round trip a party game will need, in miniature.
+ * What a phone may say, all validated here (hub §8 — a guest must not be
+ * able to claim its own state):
+ *   tilt {x, y}       clamped to −1…1, non-finite dropped
+ *   tap               a pulse request; arena.js enforces the cooldown
+ *   clip {i, n, d}    one base64 chunk of its 0.4 s attack sound
+ *
+ * What it hears back: hello (its colour and name), phase, you (lives),
+ * pulsed (start your cooldown), hit, bump, path (direct or TURN), clip-ok.
  */
 
 import { newCode, codeIcons } from "./net/codes.js";
 import { hostRendezvous } from "./net/rendezvous.js";
 import { pathOf, haveTurn } from "./net/webrtc.js";
+import * as arena from "./arena.js";
+import * as sound from "./sound.js";
 
-const COLOURS = [
-  "#ff5c8a", "#4fd6ff", "#ffd23f", "#7cff6b",
-  "#b18cff", "#ff8f3f", "#3fffd2", "#ff4bf0",
+/* Names are what the screen calls you ("Pink wins!"), so each colour has one. */
+const SEATS = [
+  { colour: "#ff5c8a", name: "Pink" },
+  { colour: "#4fd6ff", name: "Blue" },
+  { colour: "#ffd23f", name: "Yellow" },
+  { colour: "#7cff6b", name: "Green" },
+  { colour: "#b18cff", name: "Purple" },
+  { colour: "#ff8f3f", name: "Orange" },
+  { colour: "#3fffd2", name: "Teal" },
+  { colour: "#ff4bf0", name: "Magenta" },
 ];
-const MAX_PLAYERS = COLOURS.length;
-
-/* Physics, in CSS pixels and seconds. Fixed step (hub §10). */
-const STEP = 1 / 120;
+const MAX_BOTS = 8;
 const MAX_STEPS = 8;
-const ACCEL = 2600; // full tilt
-const DRAG = 1.6; // per second, so a ball coasts and then settles
-const BOUNCE = 0.62;
-const RADIUS = 34;
-const BUMP_SPEED = 260; // slower than this is a nudge, not a bump
-const BUMP_EVERY_MS = 120;
+// A shaped clip is 6,400 Int16 samples (recorder.js); allow a little slack
+// and refuse anything bigger rather than trusting the phone's arithmetic.
+const MAX_CLIP_BYTES = 6400 * 2 + 64;
 
-const players = new Map(); // id -> player
+const $ = (id) => document.getElementById(id);
+const phones = new Map(); // id -> { channel, blob, seat, path, parts }
 let canvas, ctx, width, height, dpr;
 let last = 0;
 let acc = 0;
 let started = false;
+let bots = 2;
 
 export async function startStage() {
   if (started) return;
   started = true;
-  canvas = document.getElementById("arena");
+  // We are inside the click that chose "big screen", so audio may start.
+  sound.unlock();
+  addEventListener("pointerdown", sound.unlock);
+  canvas = $("arena");
   ctx = canvas.getContext("2d");
   addEventListener("resize", resize);
   resize();
+  wirePanels();
+  arena.hooks.onPulse = onPulse;
+  arena.hooks.onHit = onHit;
+  arena.hooks.onOut = onOut;
+  arena.hooks.onBump = (blob, s) => phoneOf(blob)?.channel.send({ t: "bump", s });
+  arena.hooks.onPhase = onPhase;
+  arena.setBots(bots);
+  onPhase("lobby", null);
   keepAwake();
   requestAnimationFrame(frame);
   setInterval(refreshPaths, 2000);
@@ -54,7 +74,7 @@ export async function startStage() {
 /* ---------- the room ---------- */
 
 async function open() {
-  const status = document.getElementById("stage-status");
+  const status = $("stage-status");
   status.textContent = "Getting a code…";
   // A taken code is someone else's room right now; draw another.
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -76,27 +96,25 @@ async function open() {
 function showCode(code, room) {
   const url = `${location.origin}${location.pathname}#join=${code}`;
   drawQR(url);
-  const icons = codeIcons(code);
-  document.getElementById("code-icons").textContent = icons.join(" ");
-  document.getElementById("code-names").textContent = code.split("-").join(" · ");
-  document.getElementById("join-url").textContent = url;
+  $("code-icons").textContent = codeIcons(code).join(" ");
+  $("code-names").textContent = code.split("-").join(" · ");
+  $("join-url").textContent = url;
 
   const notes = [];
   if (room.mode === "tabs")
     notes.push(`No matchmaker (${room.detail}) — only tabs in this browser can join.`);
   else notes.push(haveTurn ? "Matchmaker up · TURN relay ready" : "Matchmaker up · STUN only (no relay)");
-  // The QR carries this page's own address. localhost means nothing to a
-  // phone, so say so rather than letting someone scan a dead link.
+  // The QR carries this page's own address; localhost means nothing to a phone.
   if (/^(localhost|127\.|\[::1\])/.test(location.hostname))
     notes.push("This is localhost: phones can't open it. Use the Mac's LAN IP or the Pages URL.");
-  if (!isSecureContext || location.protocol !== "https:")
-    notes.push("Not HTTPS: phones will get a drag pad instead of tilt.");
-  document.getElementById("stage-status").textContent = notes.join("\n");
+  if (location.protocol !== "https:")
+    notes.push("Not HTTPS: phones get a drag pad instead of tilt, and can't record.");
+  $("stage-status").textContent = notes.join("\n");
 }
 
 function drawQR(text) {
   const qr = window.qrcode?.(0, "M");
-  const target = document.getElementById("qr");
+  const target = $("qr");
   if (!qr) {
     target.hidden = true;
     return;
@@ -104,7 +122,7 @@ function drawQR(text) {
   qr.addData(text);
   qr.make();
   const n = qr.getModuleCount();
-  const quiet = 3; // light margin, so a dark page around it does not confuse a reader
+  const quiet = 3; // a light margin, so the dark page around it confuses no reader
   const cell = Math.floor(target.width / (n + quiet * 2));
   const off = Math.floor((target.width - cell * n) / 2);
   const g = target.getContext("2d");
@@ -118,64 +136,195 @@ function drawQR(text) {
 
 /* ---------- phones ---------- */
 
+const phoneOf = (blob) => (blob?.kind === "phone" ? phones.get(blob.id) : null);
+
 function onPeer(id, channel) {
-  // A phone that reloaded comes back with a new id; the old one closes
-  // itself when its connection drops.
-  if (players.size >= MAX_PLAYERS) {
+  const taken = new Set([...phones.values()].map((p) => p.seat));
+  const seat = SEATS.find((s) => !taken.has(s));
+  if (!seat) {
     channel.send({ t: "full" });
     setTimeout(() => channel.close(), 500);
     return;
   }
-  const colour = COLOURS.find((c) => ![...players.values()].some((p) => p.colour === c));
-  const player = {
-    id,
-    channel,
-    colour,
-    x: width / 2 + (Math.random() - 0.5) * 200,
-    y: height / 2 + (Math.random() - 0.5) * 200,
-    vx: 0,
-    vy: 0,
-    tx: 0,
-    ty: 0,
-    pulse: 0,
-    lastBump: 0,
-    path: "",
-    seen: performance.now(),
-  };
-  players.set(id, player);
-  channel.onMessage = (m) => receive(player, m);
+  const blob = arena.addBlob({ id, kind: "phone", colour: seat.colour, label: seat.name });
+  const phone = { channel, blob, seat, path: "", parts: null };
+  phones.set(id, phone);
+  channel.onMessage = (m) => receive(phone, m);
   channel.onClose = () => {
-    players.delete(id);
+    phones.delete(id);
+    arena.removeBlob(blob);
     renderRoster();
+    renderLobby();
   };
-  channel.send({ t: "hello", colour });
+  channel.send({ t: "hello", colour: seat.colour, name: seat.name });
+  channel.send({ t: "phase", phase: arena.phase });
+  sendLives(blob);
   renderRoster();
+  renderLobby();
   refreshPaths();
 }
 
-/* Validate everything: a phone may say how it is tilted and that it tapped. */
-function receive(player, m) {
+function receive(phone, m) {
   if (!m || typeof m !== "object") return;
-  player.seen = performance.now();
+  const blob = phone.blob;
+  blob.seen = performance.now();
   if (m.t === "tilt") {
     const x = Number(m.x);
     const y = Number(m.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    player.tx = Math.max(-1, Math.min(1, x));
-    player.ty = Math.max(-1, Math.min(1, y));
+    blob.tx = Math.max(-1, Math.min(1, x));
+    blob.ty = Math.max(-1, Math.min(1, y));
   } else if (m.t === "tap") {
-    player.pulse = 1;
-    // A hop in the direction it is already rolling, so a tap feels like
-    // something rather than only a ring.
-    const speed = Math.hypot(player.vx, player.vy) || 1;
-    player.vx += (player.vx / speed) * 420;
-    player.vy += (player.vy / speed) * 420;
+    arena.pulse(blob);
+  } else if (m.t === "clip") {
+    takeClipPart(phone, m);
   }
+}
+
+/* Chunks arrive in order on the reliable lane; assemble, check, decode. */
+function takeClipPart(phone, m) {
+  const n = Number(m.n);
+  const i = Number(m.i);
+  if (!Number.isInteger(n) || n < 1 || n > 4) return;
+  if (!Number.isInteger(i) || i < 0 || i >= n) return;
+  if (typeof m.d !== "string" || m.d.length > 8000) return;
+  if (i === 0) phone.parts = [];
+  if (!phone.parts || phone.parts.length !== i) return; // out of step; wait for a fresh i=0
+  phone.parts.push(m.d);
+  if (phone.parts.length < n) return;
+  const text = phone.parts.join("");
+  phone.parts = null;
+  let binary;
+  try {
+    binary = atob(text);
+  } catch {
+    return;
+  }
+  if (binary.length > MAX_CLIP_BYTES || binary.length % 2) return;
+  const bytes = new Uint8Array(binary.length);
+  for (let k = 0; k < binary.length; k++) bytes[k] = binary.charCodeAt(k);
+  phone.blob.clip = sound.clipBuffer(new Int16Array(bytes.buffer));
+  if (!phone.blob.clip) return;
+  phone.channel.send({ t: "clip-ok" });
+  renderRoster();
+}
+
+function sendLives(blob) {
+  phoneOf(blob)?.channel.send({ t: "you", lives: blob.lives, alive: blob.alive });
+}
+
+/* ---------- arena events ---------- */
+
+function onPulse(blob) {
+  sound.playPulse(blob);
+  phoneOf(blob)?.channel.send({ t: "pulsed", cooldown: arena.COOLDOWN });
+}
+
+function onHit(attacker, victim) {
+  sound.playHit();
+  phoneOf(victim)?.channel.send({ t: "hit" });
+  sendLives(victim);
+  if (victim.kind === "phone") renderRoster();
+}
+
+function onOut(blob) {
+  sound.playPop();
+  sendLives(blob);
+}
+
+function onPhase(phase, winner) {
+  $("lobby-panel").hidden = phase !== "lobby";
+  $("over-panel").hidden = phase !== "over";
+  // The join card is for between rounds; mid-fight it is in the way.
+  $("join-card").hidden = phase === "play";
+  if (phase === "over") {
+    $("over-title").textContent = winner ? `${winner.label === "bot" ? "A bot" : winner.label} wins!` : "Nobody wins!";
+    $("over-title").style.color = winner?.colour ?? "";
+  }
+  for (const phone of phones.values()) {
+    const won = phase === "over" && winner === phone.blob;
+    phone.channel.send({ t: "phase", phase, won });
+    sendLives(phone.blob);
+  }
+  renderRoster();
+  renderLobby();
+}
+
+/* ---------- panels ---------- */
+
+function wirePanels() {
+  $("bots-less").onclick = () => setBots(bots - 1);
+  $("bots-more").onclick = () => setBots(bots + 1);
+  $("start").onclick = () => arena.startRound();
+  $("rematch").onclick = () => arena.startRound();
+  $("to-lobby").onclick = () => arena.toLobby();
+}
+
+function setBots(n) {
+  bots = Math.max(0, Math.min(MAX_BOTS, n));
+  arena.setBots(bots);
+  renderLobby();
+}
+
+function renderLobby() {
+  $("bots-count").textContent = String(bots);
+  $("bots-less").disabled = bots <= 0;
+  $("bots-more").disabled = bots >= MAX_BOTS;
+  // A fight needs two blobs, and at least one of them should be a person.
+  const ready = phones.size >= 1 && arena.blobs.length >= 2;
+  $("start").disabled = !ready;
+  $("lobby-note").textContent =
+    phones.size === 0
+      ? "Waiting for phones…"
+      : arena.blobs.length < 2
+        ? "Add a bot or another phone to fight."
+        : "Practise now: pulses push but don't hurt yet.";
+}
+
+function renderRoster() {
+  const list = $("roster");
+  list.replaceChildren(
+    ...[...phones.values()].map((p) => {
+      const li = document.createElement("li");
+      li.style.setProperty("--c", p.seat.colour);
+      const name = document.createElement("span");
+      name.className = "who";
+      name.textContent = p.seat.name;
+      li.append(name);
+      if (arena.phase !== "lobby") {
+        const lives = document.createElement("span");
+        lives.className = "lives";
+        lives.textContent = p.blob.alive ? `♥ ${p.blob.lives}` : "out";
+        li.append(lives);
+      }
+      if (p.path) {
+        const tag = document.createElement("span");
+        tag.className = `path ${p.path}`;
+        tag.textContent = p.path === "relay" ? "via TURN" : "direct";
+        li.append(tag);
+      }
+      // Their recorded sound plays in this room, so this room can mute it.
+      if (p.blob.clip) {
+        const mute = document.createElement("button");
+        mute.className = "mute";
+        mute.setAttribute("aria-pressed", String(!!p.blob.muted));
+        mute.textContent = p.blob.muted ? "sound off" : "sound on";
+        mute.title = `Mute ${p.seat.name}'s recorded sound`;
+        mute.onclick = () => {
+          p.blob.muted = !p.blob.muted;
+          renderRoster();
+        };
+        li.append(mute);
+      }
+      return li;
+    }),
+  );
+  $("join-card").classList.toggle("small", phones.size > 0);
 }
 
 async function refreshPaths() {
   let changed = false;
-  for (const p of players.values()) {
+  for (const p of phones.values()) {
     const path = await pathOf(p.channel.connection);
     if (path && path !== p.path) {
       p.path = path;
@@ -186,85 +335,7 @@ async function refreshPaths() {
   if (changed) renderRoster();
 }
 
-function renderRoster() {
-  const list = document.getElementById("roster");
-  list.replaceChildren(
-    ...[...players.values()].map((p, i) => {
-      const li = document.createElement("li");
-      li.style.setProperty("--c", p.colour);
-      li.textContent = `Phone ${i + 1}`;
-      if (p.path) {
-        const tag = document.createElement("span");
-        tag.className = `path ${p.path}`;
-        tag.textContent = p.path === "relay" ? "via TURN" : "direct";
-        li.append(tag);
-      }
-      return li;
-    }),
-  );
-  document.getElementById("empty-hint").hidden = players.size > 0;
-  document.getElementById("join-card").classList.toggle("small", players.size > 0);
-}
-
-/* ---------- simulation ---------- */
-
-function bump(p, strength, now) {
-  if (now - p.lastBump < BUMP_EVERY_MS) return;
-  p.lastBump = now;
-  p.channel.send({ t: "bump", s: Math.min(1, strength) });
-}
-
-function step(now) {
-  const list = [...players.values()];
-  const damp = Math.exp(-DRAG * STEP);
-  for (const p of list) {
-    p.vx = (p.vx + p.tx * ACCEL * STEP) * damp;
-    p.vy = (p.vy + p.ty * ACCEL * STEP) * damp;
-    p.x += p.vx * STEP;
-    p.y += p.vy * STEP;
-    p.pulse = Math.max(0, p.pulse - STEP * 2.5);
-    // Walls.
-    for (const [pos, vel, lo, hi] of [
-      ["x", "vx", RADIUS, width - RADIUS],
-      ["y", "vy", RADIUS, height - RADIUS],
-    ]) {
-      if (p[pos] < lo || p[pos] > hi) {
-        const hit = Math.abs(p[vel]);
-        p[pos] = p[pos] < lo ? lo : hi;
-        p[vel] = -p[vel] * BOUNCE;
-        if (hit > BUMP_SPEED) bump(p, hit / 1800, now);
-      }
-    }
-  }
-  // Balls against balls: equal masses, push apart, swap the normal speed.
-  for (let i = 0; i < list.length; i++)
-    for (let j = i + 1; j < list.length; j++) {
-      const a = list[i];
-      const b = list[j];
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const d = Math.hypot(dx, dy);
-      if (d === 0 || d >= RADIUS * 2) continue;
-      const nx = dx / d;
-      const ny = dy / d;
-      const overlap = RADIUS * 2 - d;
-      a.x -= (nx * overlap) / 2;
-      a.y -= (ny * overlap) / 2;
-      b.x += (nx * overlap) / 2;
-      b.y += (ny * overlap) / 2;
-      const rel = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
-      if (rel <= 0) continue;
-      const k = rel * (0.5 + BOUNCE / 2);
-      a.vx -= k * nx;
-      a.vy -= k * ny;
-      b.vx += k * nx;
-      b.vy += k * ny;
-      if (rel > BUMP_SPEED) {
-        bump(a, rel / 1800, now);
-        bump(b, rel / 1800, now);
-      }
-    }
-}
+/* ---------- the loop ---------- */
 
 function frame(t) {
   requestAnimationFrame(frame);
@@ -272,16 +343,15 @@ function frame(t) {
   last = t;
   acc += dt;
   let steps = 0;
-  while (acc >= STEP && steps < MAX_STEPS) {
-    step(t);
-    acc -= STEP;
+  while (acc >= arena.STEP && steps < MAX_STEPS) {
+    arena.step();
+    acc -= arena.STEP;
     steps++;
   }
   if (steps === MAX_STEPS) acc = 0;
-  draw(t);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  arena.draw(ctx, t);
 }
-
-/* ---------- drawing ---------- */
 
 function resize() {
   dpr = Math.min(2, devicePixelRatio || 1);
@@ -289,74 +359,14 @@ function resize() {
   height = innerHeight;
   canvas.width = Math.round(width * dpr);
   canvas.height = Math.round(height * dpr);
-  for (const p of players.values()) {
-    p.x = Math.min(Math.max(p.x, RADIUS), width - RADIUS);
-    p.y = Math.min(Math.max(p.y, RADIUS), height - RADIUS);
-  }
-}
-
-function draw(t) {
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = "#0b0e1a";
-  ctx.fillRect(0, 0, width, height);
-  // A faint grid, so motion reads even with one ball.
-  ctx.strokeStyle = "rgba(120,140,255,0.07)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let x = 0; x < width; x += 48) {
-    ctx.moveTo(x + 0.5, 0);
-    ctx.lineTo(x + 0.5, height);
-  }
-  for (let y = 0; y < height; y += 48) {
-    ctx.moveTo(0, y + 0.5);
-    ctx.lineTo(width, y + 0.5);
-  }
-  ctx.stroke();
-
-  for (const p of players.values()) {
-    // Tilt arrow: what the phone is asking for, separate from where it is.
-    ctx.strokeStyle = p.colour;
-    ctx.globalAlpha = 0.5;
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y);
-    ctx.lineTo(p.x + p.tx * 90, p.y + p.ty * 90);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-
-    if (p.pulse > 0) {
-      ctx.strokeStyle = p.colour;
-      ctx.globalAlpha = p.pulse;
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, RADIUS + (1 - p.pulse) * 70, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
-
-    ctx.shadowColor = p.colour;
-    ctx.shadowBlur = 24;
-    ctx.fillStyle = p.colour;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, RADIUS, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    // Gone quiet for two seconds: dim it, so a sleeping phone is visible.
-    if (t - p.seen > 2000) {
-      ctx.fillStyle = "rgba(11,14,26,0.6)";
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, RADIUS, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
+  arena.setSize(width, height);
 }
 
 /* A TV that dims mid-party drops off the broker; ask it not to. */
-async function keepAwake() {
+function keepAwake() {
   const ask = async () => {
     try {
-      if (document.visibilityState === "visible")
-        await navigator.wakeLock?.request("screen");
+      if (document.visibilityState === "visible") await navigator.wakeLock?.request("screen");
     } catch {
       /* Refused or unsupported; the broker beat in rendezvous.js covers it. */
     }

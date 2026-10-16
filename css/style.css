@@ -251,17 +251,6 @@ body {
   color: #ffd23f;
 }
 
-.empty-hint {
-  position: absolute;
-  top: 40%;
-  left: 0;
-  right: 0;
-  margin: 0;
-  text-align: center;
-  color: var(--muted);
-  font-size: 22px;
-  pointer-events: none;
-}
 
 /* ---------- the keypad ---------- */
 
@@ -339,33 +328,176 @@ body {
   }
 }
 
-/* A phone on its side: tray left, controls right, nothing scrolls. */
+/* ---------- the fight ---------- */
+
+/* Lobby and result: one card in the middle, the arena moving behind it. */
+.centre-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 16px;
+  width: min(440px, calc(100% - 48px));
+  padding: 24px;
+  border: 1px solid var(--edge);
+  border-radius: 24px;
+  background: var(--panel);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  text-align: center;
+}
+.small-mark {
+  font-size: 48px;
+}
+.rules {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.rules b {
+  color: var(--text);
+}
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.stepper output {
+  min-width: 2ch;
+  font-size: 28px;
+  font-weight: 700;
+}
+.pill.round {
+  width: 52px;
+  padding: 0;
+  font-size: 26px;
+}
+.over-title {
+  margin: 0;
+  font-size: clamp(34px, 6vw, 56px);
+  text-shadow: 0 0 24px currentColor;
+}
+
+#roster .who {
+  flex: 1;
+}
+#roster .lives {
+  font-variant-numeric: tabular-nums;
+}
+.mute {
+  padding: 4px 10px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font: 500 12px var(--body);
+  cursor: pointer;
+}
+.mute[aria-pressed="true"] {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+/* ---------- the pad in a fight ---------- */
+
+.pad-name {
+  margin: 0;
+  color: var(--me);
+  font-size: 22px;
+  font-weight: 800;
+}
+.pad-lives {
+  margin: 0;
+  min-height: 1.2em;
+  color: var(--me);
+  font-size: 22px;
+  letter-spacing: 0.1em;
+}
+#pad-live .tray {
+  width: 64vmin;
+  height: 64vmin;
+}
+/* Pulse is the one button a thumb hunts for mid-fight: big, and it shows
+   the stage's cooldown filling back up. */
+.pill.pulse {
+  position: relative;
+  overflow: hidden;
+  width: min(100%, 420px);
+  min-height: 84px;
+  font-size: 26px;
+  touch-action: none;
+}
+.pill.pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(11, 14, 26, 0.55);
+  transform-origin: left;
+  scale: 0 1;
+}
+.pill.pulse.cooling::after {
+  animation: cool var(--cd, 0.8s) linear;
+}
+@keyframes cool {
+  from {
+    scale: 1 1;
+  }
+  to {
+    scale: 0 1;
+  }
+}
+.tray.hurt {
+  animation: hurt 0.35s ease-out;
+}
+@keyframes hurt {
+  from {
+    background: rgba(255, 60, 60, 0.6);
+  }
+  to {
+    background: transparent;
+  }
+}
+.pill.rec {
+  touch-action: none;
+}
+.pill.rec.on {
+  background: #ff3c5a;
+  color: #fff;
+  box-shadow: 0 0 30px #ff3c5a;
+}
+
+/* A phone on its side: tray left, everything else stacked right, so
+   nothing scrolls (hub §2, maxgear's shape). */
 @media (orientation: landscape) and (max-height: 500px) {
   #pad-live {
     grid-template-columns: auto 1fr;
-    grid-template-areas: "tray mode" "tray doors" "tray path";
     align-items: center;
     column-gap: 24px;
   }
-  .tray {
-    grid-area: tray;
-    width: 80vh;
-    height: 80vh;
+  #pad-live > * {
+    grid-column: 2;
   }
-  #pad-mode {
-    grid-area: mode;
+  #pad-live .tray {
+    grid-column: 1;
+    grid-row: 1 / span 7;
+    width: 78vh;
+    height: 78vh;
   }
-  #pad-live .doors {
-    grid-area: doors;
-  }
-  #pad-path {
-    grid-area: path;
+  .pill.pulse {
+    min-height: 60px;
   }
   .keys {
     grid-template-columns: repeat(6, 1fr);
     width: min(100%, 520px);
   }
   .screen {
-    gap: 12px;
+    gap: 10px;
+  }
+  .centre-panel {
+    gap: 10px;
+    padding: 16px;
   }
 }

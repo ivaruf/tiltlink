@@ -1,33 +1,66 @@
 # TiltLink
 
-A tech demo: a phone's tilt rolls a ball on a big screen, over WebRTC, joined
-by scanning a QR code. It's the seed of a phones-as-controllers party game,
-not a game yet.
+A minigame and tech demo: every phone is a blob on the big screen, tilted
+to roll, and **Pulse** is the attack. Pulse right next to someone and they
+lose a life; ten lives each, last blob standing wins. Phones join by
+scanning a QR code, over WebRTC. Not in the arcade, on purpose.
 
-## How it works
+## How it plays
 
-- **The big screen** ("This is the big screen") takes a three-picture room
-  code, holds it at the PeerJS broker, and shows it as a QR code, as the
-  three pictures with their names, and as a link. Each phone that joins gets
-  a ball in its own colour (up to eight).
-- **The phone** opens the QR's link (`#join=pizza-pizza-moon`), taps
-  **Connect**, and holds the phone like a tray. **Level** sets the current
-  angle as flat. **Pulse** sends a tap that the screen shows as a ring and a
-  hop. A phone that didn't scan can tap the code in on the picture keypad.
-- **On the wire:** the phone sends `{t:"tilt", x, y}` (−1…1) 30 times a
-  second on the unreliable lane. The screen owns the physics (host-
-  authoritative, hub §8) and sends back `hello` (your colour), `bump` (the
-  phone buzzes on Android and the tray flashes on all phones) and `path`.
-- **Direct or relayed:** the screen asks `getStats()` every two seconds
-  whether each phone is on a direct path or relayed through Cloudflare TURN,
-  and shows it in the roster ("direct" / "via TURN") and on the phone.
-  Add `?relay` to the screen's URL to force the relay for every phone.
+- **Lobby.** The big screen ("This is the big screen") shows the QR code
+  and the three-picture code. Phones join and roll about. Pulses push but
+  don't hurt, so everyone gets a feel for the reach. The host picks
+  **0–8 bots** and presses **Start**.
+- **Round.** Everyone starts on ten lives, spread round a circle. A pulse is
+  a shockwave about one blob-width wide, and the ring on screen grows to
+  exactly its reach. Every blob inside it is knocked away and loses a life.
+  0.8 s cooldown, enforced by the screen. At zero the blob pops and that
+  phone watches. A phone that joins mid-round waits for the next.
+- **Over.** "Pink wins!" (or a bot does), then **Rematch** or **Lobby**,
+  with the same phones still connected.
+- **Bots** have the same physics, pulse and cooldown as a phone. They wobble
+  as they steer and are a little slow on the trigger, so they can be beaten.
 
-The network files in `js/net/` are neonfox's, trimmed (no i18n, no self-run
-relay tier). `vendor/peerjs.js` is the same pinned copy neonfox ships, and
-`vendor/qrcode.js` is [qrcode-generator](https://github.com/kazuhiko/qrcode-generator)
-1.4.4 by Kazuhiko Arase (MIT), vendored so drawing the QR asks nobody
-anything.
+## Your attack sound
+
+On the phone, **Your sound** opens the recorder (it needs HTTPS and asks
+for the mic). Hold the button and shout. The phone keeps 0.4 s, starting
+just before the loud part, levels it, previews it, and sends it to the
+screen. It plays every time you pulse, with a little pitch scatter. Players
+without a clip get a synth whomp.
+
+- **The phone decodes, not the TV.** It sends raw 16 kHz mono PCM (12.8 KB,
+  three base64 chunks on the reliable lane), so the TV never has to decode
+  a phone codec it may not know.
+- **The mic is open only while the sound panel is.** Done closes it.
+- **The clip never leaves the room's devices.** It goes phone → screen over
+  the encrypted channel and is gone when the screen's tab closes.
+- **The screen has a limiter**, and each player's row has a **sound on/off**
+  button, since their voice is playing through your TV.
+
+## Under the hood
+
+| file | does |
+| --- | --- |
+| `js/main.js` | picks the role: `#join=<code>` is a phone, otherwise ask |
+| `js/stage.js` | the big screen: room, QR, lobby and result panels, roster, wire |
+| `js/arena.js` | physics, pulses, lives, phases, bots, drawing |
+| `js/sound.js` | the screen's audio: clips, whomp/hit/pop, limiter |
+| `js/pad.js` | the phone: tilt or drag, pulse, lives, keypad |
+| `js/recorder.js` | mic capture, trim, level, resample, chunk |
+| `js/net/` | neonfox's WebRTC + PeerJS rendezvous + picture codes, trimmed |
+
+- **On the wire:** the phone sends `tilt` (−1…1, 30 Hz, unreliable lane),
+  `tap` and `clip` chunks. The screen validates everything and owns the
+  fight (host-authoritative, hub §8). It sends back `hello` (your colour and
+  name), `phase`, `you` (lives), `pulsed` (start the cooldown bar), `hit`,
+  `bump`, `path` and `clip-ok`.
+- **Direct or relayed:** each phone's roster row says "direct" or "via
+  TURN". Add `?relay` to the screen's URL to force the relay.
+- **Sounds:** synthesised at runtime rather than composed in Sonic Pi
+  (hub §9), because the clips only exist at runtime and the stock sounds
+  are placeholders. `vendor/qrcode.js` is qrcode-generator 1.4.4
+  (Kazuhiko Arase, MIT).
 
 ## Running it, and the two catches
 
@@ -42,7 +75,7 @@ Serve the hub root (`python3 -m http.server 7777`) and open `/tiltlink/`.
    go). That still tests WebRTC, the QR, the colours and the bumps. Real
    tilt needs the Pages URL. A LAN origin also gets no TURN (the Worker only
    answers the Pages origins), so it connects on STUN alone, which is fine on
-   one wifi.
+   one wifi. Recording needs HTTPS too.
 
 Two tabs in one desktop browser also work, through the broker or, if it
 can't be loaded, through `BroadcastChannel`.
