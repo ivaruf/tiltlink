@@ -1,10 +1,10 @@
 /*
- * recorder.js — record a 0.4 second attack sound on the phone.
+ * recorder.js — record a 0.8 second attack sound on the phone.
  *
  * Raw samples straight off the microphone, not MediaRecorder: a recorder
  * hands back a file in this phone's own codec (WebM/Opus on Android, MP4/AAC
  * on an iPhone), which the TV's browser may not decode, and its start-up
- * lag would eat most of a 0.4 s window. Raw samples are captured from the
+ * lag would eat most of a 0.8 s window. Raw samples are captured from the
  * first moment and are the same on every phone.
  *
  * Capture uses a ScriptProcessorNode. It is deprecated in favour of
@@ -18,15 +18,15 @@
  * this phone except to the stage, over the encrypted data channel.
  *
  * What a take becomes (shape()):
- *   - trimmed to start just before the first loud sample, so the 0.4 s is
+ *   - trimmed to start just before the first loud sample, so the 0.8 s is
  *     the shout and not the breath before it
  *   - resampled to 16 kHz mono and levelled to one peak, so a whisper and a
  *     scream play at about the same volume on the TV
  *   - faded at both ends, so it does not click
- *   - Int16, 6,400 samples, 12.8 KB
+ *   - Int16, 12,800 samples, 25.6 KB
  */
 
-export const CLIP_SECONDS = 0.4;
+export const CLIP_SECONDS = 0.8;
 export const CLIP_RATE = 16000;
 const MAX_TAKE_SECONDS = 2;
 
@@ -159,8 +159,8 @@ export function preview(pcm) {
 
 /*
  * Over the wire as base64 in chunks: the data channel takes JSON strings
- * here, and 12.8 KB is 17 KB of base64 — just over the 16 KB a data channel
- * message can be counted on to carry. Three chunks of 6,000 characters.
+ * here, and 25.6 KB is 34 KB of base64 — twice the 16 KB a data channel
+ * message can be counted on to carry. Six chunks of 6,000 characters.
  */
 const CHUNK = 6000;
 

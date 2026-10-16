@@ -1,7 +1,7 @@
 /*
  * sound.js — the big screen's speaker.
  *
- * Every pulse plays its blob's sound: the 0.4 s clip its player recorded on
+ * Every pulse plays its blob's sound: the 0.8 s clip its player recorded on
  * their phone (pad.js / recorder.js), or a synthesised "whomp" for bots and
  * for players who have not recorded one. Hits and pops are synthesised too.
  *

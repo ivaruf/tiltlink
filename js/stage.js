@@ -10,7 +10,7 @@
  * able to claim its own state):
  *   tilt {x, y}       clamped to −1…1, non-finite dropped
  *   tap               a pulse request; arena.js enforces the cooldown
- *   clip {i, n, d}    one base64 chunk of its 0.4 s attack sound
+ *   clip {i, n, d}    one base64 chunk of its 0.8 s attack sound
  *
  * What it hears back: hello (its colour and name), phase, you (lives),
  * pulsed (start your cooldown), hit, bump, path (direct or TURN), clip-ok.
@@ -35,9 +35,9 @@ const SEATS = [
 ];
 const MAX_BOTS = 8;
 const MAX_STEPS = 8;
-// A shaped clip is 6,400 Int16 samples (recorder.js); allow a little slack
+// A shaped clip is 12,800 Int16 samples (recorder.js); allow a little slack
 // and refuse anything bigger rather than trusting the phone's arithmetic.
-const MAX_CLIP_BYTES = 6400 * 2 + 64;
+const MAX_CLIP_BYTES = 12800 * 2 + 64;
 
 const $ = (id) => document.getElementById(id);
 const phones = new Map(); // id -> { channel, blob, seat, path, parts }
@@ -185,7 +185,7 @@ function receive(phone, m) {
 function takeClipPart(phone, m) {
   const n = Number(m.n);
   const i = Number(m.i);
-  if (!Number.isInteger(n) || n < 1 || n > 4) return;
+  if (!Number.isInteger(n) || n < 1 || n > 8) return;
   if (!Number.isInteger(i) || i < 0 || i >= n) return;
   if (typeof m.d !== "string" || m.d.length > 8000) return;
   if (i === 0) phone.parts = [];

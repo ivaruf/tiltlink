@@ -24,13 +24,13 @@ scanning a QR code, over WebRTC. Not in the arcade, on purpose.
 ## Your attack sound
 
 On the phone, **Your sound** opens the recorder (it needs HTTPS and asks
-for the mic). Hold the button and shout. The phone keeps 0.4 s, starting
+for the mic). Hold the button and shout. The phone keeps 0.8 s, starting
 just before the loud part, levels it, previews it, and sends it to the
 screen. It plays every time you pulse, with a little pitch scatter. Players
 without a clip get a synth whomp.
 
-- **The phone decodes, not the TV.** It sends raw 16 kHz mono PCM (12.8 KB,
-  three base64 chunks on the reliable lane), so the TV never has to decode
+- **The phone decodes, not the TV.** It sends raw 16 kHz mono PCM (25.6 KB,
+  six base64 chunks on the reliable lane), so the TV never has to decode
   a phone codec it may not know.
 - **The mic is open only while the sound panel is.** Done closes it.
 - **The clip never leaves the room's devices.** It goes phone → screen over
